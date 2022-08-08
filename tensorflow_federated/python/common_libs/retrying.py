@@ -27,7 +27,8 @@ def retry(fn=None,
                                               bool] = lambda x: True,
           retry_on_result_filter: Callable[[Any], bool] = lambda x: False,
           wait_max_ms: Union[float, int] = 30000,
-          wait_multiplier: Union[float, int] = 2):
+          wait_multiplier: Union[float, int] = 2,
+          max_attempts: int = 100):
   """Pure Python decorator that retries functions or coroutine functions.
 
   `retry` starts at some delay between function invocations, and backs
@@ -48,6 +49,8 @@ def retry(fn=None,
       `fn`, in milliseconds. Must be positive.
     wait_multiplier: Number determining the exponential backoff multiplier to
       use. Must be positive.
+    max_attempts: Maximum number of invocations of `fn` allowed. Must be
+      positive.
 
   Returns:
     In the case that `fn` is provided, a decorated version of `fn` respecting
@@ -56,6 +59,7 @@ def retry(fn=None,
   """
   py_typecheck.check_type(wait_max_ms, (float, int))
   py_typecheck.check_type(wait_multiplier, (float, int))
+  py_typecheck.check_type(max_attempts, int)
   if not inspect.isfunction(retry_on_exception_filter):
     raise TypeError(
         'Expected function to be passed as retry_on_exception_filter; '
@@ -73,6 +77,10 @@ def retry(fn=None,
     raise ValueError(
         'wait_multiplier required to be positive; encountered value {}.'.format(
             wait_multiplier))
+  if max_attempts <= 0:
+    raise ValueError(
+        'max_attempts required to be positive; encountered value {}.'.format(
+            max_attempts))
 
   if fn is None:
     # Called with arguments; delay decoration until `fn` is passed in.
@@ -91,11 +99,13 @@ def retry(fn=None,
     async def retry_coro_fn(*args, **kwargs):
 
       retry_wait_ms = 1.
+      num_attempts = 0
 
       while True:
         try:
+          num_attempts += 1
           result = await fn(*args, **kwargs)
-          if retry_on_result_filter(result):
+          if retry_on_result_filter(result) and num_attempts <= max_attempts:
             retry_wait_ms = min(wait_max_ms, retry_wait_ms * wait_multiplier)
             # time.sleep takes arguments in seconds.
             await asyncio.sleep(retry_wait_ms / 1000)
@@ -103,8 +113,9 @@ def retry(fn=None,
           else:
             return result
         except Exception as e:  # pylint: disable=broad-except
-          if not retry_on_exception_filter(e):
+          if not retry_on_exception_filter(e) or num_attempts > max_attempts:
             raise e
+
           retry_wait_ms = min(wait_max_ms, retry_wait_ms * wait_multiplier)
           # asyncio.sleep takes arguments in seconds.
           await asyncio.sleep(retry_wait_ms / 1000)
@@ -118,11 +129,13 @@ def retry(fn=None,
     def retry_fn(*args, **kwargs):
 
       retry_wait_ms = 1.
+      num_attempts = 0
 
       while True:
         try:
+          num_attempts += 1
           result = fn(*args, **kwargs)
-          if retry_on_result_filter(result):
+          if retry_on_result_filter(result) and num_attempts <= max_attempts:
             retry_wait_ms = min(wait_max_ms, retry_wait_ms * wait_multiplier)
             # time.sleep takes arguments in seconds.
             time.sleep(retry_wait_ms / 1000)
@@ -130,7 +143,7 @@ def retry(fn=None,
           else:
             return result
         except Exception as e:  # pylint: disable=broad-except
-          if not retry_on_exception_filter(e):
+          if not retry_on_exception_filter(e) or num_attempts > max_attempts:
             raise e
           retry_wait_ms = min(wait_max_ms, retry_wait_ms * wait_multiplier)
           # time.sleep takes arguments in seconds.
